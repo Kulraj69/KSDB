@@ -2,7 +2,7 @@ import os
 import json
 import uuid
 from typing import Optional, Dict, Any, List
-from sqlalchemy import create_engine, Column, String, Integer, Text, ForeignKey, select, delete
+from sqlalchemy import create_engine, Column, String, BigInteger, Text, ForeignKey, select, delete
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session
 from sqlalchemy.exc import IntegrityError
 
@@ -22,7 +22,7 @@ class DocumentModel(Base):
     __tablename__ = "documents"
     id = Column(String, primary_key=True) # Composite PK part 1
     collection_id = Column(String, ForeignKey("collections.id", ondelete="CASCADE"), primary_key=True) # Composite PK part 2
-    int_id = Column(Integer, index=True) # For HNSW mapping
+    int_id = Column(BigInteger, index=True) # For HNSW mapping
     text = Column(Text)
     metadata_json = Column("metadata", Text)
 

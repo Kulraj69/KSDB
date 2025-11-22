@@ -1,30 +1,9 @@
-# KSdb - Custom Vector Database
+# KSdb - Production-Ready Vector Database
 
-A production-ready, high-performance vector database built from scratch.
-
-## 🏗 Architecture
-
-| Component | Technology | Description |
-|-----------|------------|-------------|
-| **API Layer** | **FastAPI** (Python) | High-performance async REST API |
-| **Vector Index** | **HNSWlib** | State-of-the-art Approximate Nearest Neighbor search |
-| **Metadata** | **SQLite** | Lightweight, serverless SQL database (upgradable to Postgres) |
-| **Embeddings** | **Sentence-Transformers** | Local inference for text-to-vector conversion |
-| **Deployment** | **Docker** | Containerized for easy deployment |
+A scalable, cloud-native vector database built with Python, PostgreSQL, and AWS S3. Designed to compete with ChromaDB for semantic search and AI applications.
 
 ## 🚀 Features
 
-- **Upsert**: Add or update documents with vector embeddings.
-- **Search**: Semantic search with HNSW index.
-- **Filtering**: (Planned) Metadata filtering using SQL.
-- **Persistence**: Automatic saving of index and metadata.
-- **Dockerized**: Run anywhere with a single command.
-
-## 📂 Structure
-
-```
-KSdb/
- ├── server/            # FastAPI Server
  │   ├── main.py        # API Endpoints
  │   ├── db.py          # Metadata storage (SQLite)
  │   ├── vector_index.py# HNSWlib wrapper

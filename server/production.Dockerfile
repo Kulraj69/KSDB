@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y \
 
 COPY requirements.txt .
 RUN pip install --user --no-cache-dir -r requirements.txt
-RUN pip install --user gunicorn
+RUN pip install --user gunicorn uvicorn[standard]
 
 # Stage 2: Runtime
 FROM python:3.11-slim

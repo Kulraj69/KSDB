@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+server/index.bin
+server/metadata.db
+.DS_Store

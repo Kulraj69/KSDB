@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  server:
+    build: ./server
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/ksdb
+      - S3_BUCKET_NAME=ksdb-1
+      - AWS_REGION=us-east-1
+      # Uncomment and fill these if running locally without ~/.aws/credentials
+      # - AWS_ACCESS_KEY_ID=your_access_key
+      # - AWS_SECRET_ACCESS_KEY=your_secret_key
+    depends_on:
+      - postgres
+    volumes:
+      - ./server/indices:/app/indices
+      - ~/.aws:/root/.aws:ro # Mount local AWS creds if available
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=ksdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

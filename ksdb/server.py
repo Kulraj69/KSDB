@@ -7,8 +7,8 @@ import os
 import uvicorn
 import uuid
 
-from vector_index import VectorIndex
-from db import MetadataDB
+from .vector_index import VectorIndex
+from .db import MetadataDB
 
 app = FastAPI(title="KSdb", description="Custom Vector Database with Collections")
 
@@ -62,6 +62,66 @@ def get_collection_or_404(name: str):
     if not collection:
         raise HTTPException(status_code=404, detail=f"Collection '{name}' not found")
     return collection
+
+def _matches_filter(metadata: Dict[str, Any], filter_dict: Dict[str, Any]) -> bool:
+    """
+    Check if metadata matches the filter dictionary.
+    Supports ChromaDB-style operators: $eq, $ne, $gt, $gte, $lt, $lte, $in, $nin
+    And logical operators: $and, $or
+    """
+    for key, value in filter_dict.items():
+        # Handle logical operators
+        if key == "$and":
+            if not isinstance(value, list):
+                return False
+            if not all(_matches_filter(metadata, sub_filter) for sub_filter in value):
+                return False
+            continue
+        if key == "$or":
+            if not isinstance(value, list):
+                return False
+            if not any(_matches_filter(metadata, sub_filter) for sub_filter in value):
+                return False
+            continue
+            
+        # Handle field filters
+        doc_val = metadata.get(key)
+        
+        # Direct equality check (e.g. {"category": "tech"})
+        if not isinstance(value, dict):
+            if doc_val != value:
+                return False
+            continue
+            
+        # Operator checks (e.g. {"price": {"$gt": 10}})
+        for op, op_val in value.items():
+            if op == "$eq":
+                if doc_val != op_val: return False
+            elif op == "$ne":
+                if doc_val == op_val: return False
+            elif op == "$gt":
+                if not (isinstance(doc_val, (int, float)) and isinstance(op_val, (int, float))): return False
+                if not doc_val > op_val: return False
+            elif op == "$gte":
+                if not (isinstance(doc_val, (int, float)) and isinstance(op_val, (int, float))): return False
+                if not doc_val >= op_val: return False
+            elif op == "$lt":
+                if not (isinstance(doc_val, (int, float)) and isinstance(op_val, (int, float))): return False
+                if not doc_val < op_val: return False
+            elif op == "$lte":
+                if not (isinstance(doc_val, (int, float)) and isinstance(op_val, (int, float))): return False
+                if not doc_val <= op_val: return False
+            elif op == "$in":
+                if not isinstance(op_val, list): return False
+                if doc_val not in op_val: return False
+            elif op == "$nin":
+                if not isinstance(op_val, list): return False
+                if doc_val in op_val: return False
+            else:
+                # Unknown operator or nested dict, treat as inequality if not dict
+                return False
+                
+    return True
 
 # --- Collection Endpoints ---
 
@@ -188,16 +248,11 @@ async def search(name: str, q: SearchQuery):
             
             doc = docs_map.get(hnsw_id)
             if not doc:
-                continue # Should not happen unless DB and Index are out of sync
+                continue 
             
             # 4. Apply Metadata Filter (Python-side)
             if q.where:
-                match = True
-                for k, v in q.where.items():
-                    if doc["metadata"].get(k) != v:
-                        match = False
-                        break
-                if not match:
+                if not _matches_filter(doc["metadata"], q.where):
                     continue
             
             results.append(SearchResult(

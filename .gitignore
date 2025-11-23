@@ -2,6 +2,19 @@ __pycache__/
 *.pyc
 .venv/
 .env
+.DS_Store
+
+# KSdb local data
+.ksdb/
+indices/
 server/index.bin
 server/metadata.db
-.DS_Store
+
+# Logs
+server.log
+*.log
+
+# Build artifacts
+dist/
+build/
+*.egg-info/

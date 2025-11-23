@@ -131,6 +131,37 @@ class MetadataDB:
             session.commit()
         finally:
             session.close()
+    
+    def insert_batch(
+        self, 
+        collection_id: str, 
+        doc_ids: List[str], 
+        int_ids: List[int], 
+        texts: List[str], 
+        metadatas: List[Dict[str, Any]]
+    ):
+        """Batch insert - much faster than individual inserts"""
+        session = self._get_session()
+        try:
+            docs = []
+            for doc_id, int_id, text, metadata in zip(doc_ids, int_ids, texts, metadatas):
+                meta_json = json.dumps(metadata)
+                doc = DocumentModel(
+                    id=doc_id,
+                    collection_id=collection_id,
+                    int_id=int_id,
+                    text=text,
+                    metadata_json=meta_json
+                )
+                docs.append(doc)
+            
+            # Bulk merge operation
+            for doc in docs:
+                session.merge(doc)
+            
+            session.commit()
+        finally:
+            session.close()
 
     def get(self, collection_id: str, doc_id: str) -> Optional[Dict[str, Any]]:
         session = self._get_session()

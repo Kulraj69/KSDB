@@ -35,16 +35,20 @@ class Collection:
         documents: List[str],
         metadatas: Optional[List[Dict[str, Any]]] = None
     ):
-        """Add documents to collection"""
+        """Add documents to collection - automatically uses batch API for speed"""
         if metadatas is None:
             metadatas = [{} for _ in ids]
         
-        for doc_id, text, metadata in zip(ids, documents, metadatas):
-            response = requests.post(
-                f"{self.client_url}/collections/{self.name}/add",
-                json={"id": doc_id, "text": text, "metadata": metadata}
-            )
-            response.raise_for_status()
+        # Use batch endpoint for better performance
+        response = requests.post(
+            f"{self.client_url}/collections/{self.name}/add_batch",
+            json={
+                "ids": ids,
+                "documents": documents,
+                "metadatas": metadatas
+            }
+        )
+        response.raise_for_status()
     
     def query(
         self,

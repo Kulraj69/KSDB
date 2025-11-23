@@ -2,7 +2,7 @@ import os
 import json
 import uuid
 from typing import Optional, Dict, Any, List
-from sqlalchemy import create_engine, Column, String, BigInteger, Text, ForeignKey, select, delete
+from sqlalchemy import create_engine, Column, String, BigInteger, Text, ForeignKey, select, delete, Float, or_, text
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session
 from sqlalchemy.exc import IntegrityError
 
@@ -30,6 +30,16 @@ class DocumentModel(Base):
     def meta(self):
         return json.loads(self.metadata_json) if self.metadata_json else {}
 
+class TripleModel(Base):
+    __tablename__ = "triples"
+    id = Column(String, primary_key=True)
+    collection_id = Column(String, ForeignKey("collections.id", ondelete="CASCADE"), nullable=False)
+    subject = Column(String, index=True, nullable=False)
+    predicate = Column(String, nullable=False)
+    object = Column(String, index=True, nullable=False)
+    document_id = Column(String, nullable=True)
+    weight = Column(Float, default=1.0)
+
 class MetadataDB:
     def __init__(self):
         # Default to sqlite if no env var provided
@@ -56,9 +66,50 @@ class MetadataDB:
 
     def _init_db(self):
         Base.metadata.create_all(bind=self.engine)
+        # Initialize FTS5 virtual table for Hybrid Search (SQLite only for now)
+        if "sqlite" in self.db_url:
+            with self.engine.connect() as conn:
+                conn.execute(text("CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(id UNINDEXED, text, collection_id UNINDEXED)"))
+                conn.commit()
 
     def _get_session(self) -> Session:
         return self.SessionLocal()
+
+    # --- FTS / Hybrid Search ---
+
+    def insert_fts_batch(self, collection_id: str, ids: List[str], texts: List[str]):
+        """Insert text into FTS index"""
+        if "sqlite" not in self.db_url:
+            return # Skip for non-sqlite for now (Postgres uses tsvector)
+            
+        with self.engine.connect() as conn:
+            # Delete existing entries to avoid duplicates (naive update)
+            # In FTS5 we can't easily "upsert", so we delete and insert
+            for doc_id in ids:
+                conn.execute(text("DELETE FROM documents_fts WHERE id = :id AND collection_id = :col_id"), 
+                           {"id": doc_id, "col_id": collection_id})
+            
+            # Insert new
+            values = [{"id": i, "text": t, "col_id": collection_id} for i, t in zip(ids, texts)]
+            conn.execute(text("INSERT INTO documents_fts (id, text, collection_id) VALUES (:id, :text, :col_id)"), values)
+            conn.commit()
+
+    def search_fts(self, collection_id: str, query: str, limit: int = 20) -> List[str]:
+        """Full Text Search using FTS5"""
+        if "sqlite" not in self.db_url:
+            return []
+            
+        with self.engine.connect() as conn:
+            # Simple FTS query
+            # We sanitize the query slightly to prevent syntax errors
+            safe_query = query.replace('"', '""')
+            stmt = text(f"SELECT id FROM documents_fts WHERE collection_id = :col_id AND documents_fts MATCH :query ORDER BY rank LIMIT :limit")
+            try:
+                result = conn.execute(stmt, {"col_id": collection_id, "query": safe_query, "limit": limit})
+                return [row[0] for row in result]
+            except Exception as e:
+                print(f"FTS Error: {e}")
+                return []
 
     # --- Collection Management ---
 
@@ -247,3 +298,59 @@ class MetadataDB:
     def close(self):
         # SQLAlchemy engine connection pooling handles closing usually
         pass
+
+    # --- Knowledge Graph Management ---
+
+    def insert_triples(self, collection_id: str, triples: List[Dict[str, Any]]):
+        """
+        Insert triples into the graph.
+        triples format: [{"subject": "S", "predicate": "P", "object": "O", "doc_id": "opt"}]
+        """
+        session = self._get_session()
+        try:
+            triple_objs = []
+            for t in triples:
+                triple_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{collection_id}:{t['subject']}:{t['predicate']}:{t['object']}"))
+                obj = TripleModel(
+                    id=triple_id,
+                    collection_id=collection_id,
+                    subject=t['subject'],
+                    predicate=t['predicate'],
+                    object=t['object'],
+                    document_id=t.get('doc_id'),
+                    weight=t.get('weight', 1.0)
+                )
+                triple_objs.append(obj)
+            
+            for obj in triple_objs:
+                session.merge(obj)
+            session.commit()
+        finally:
+            session.close()
+
+    def get_triples(self, collection_id: str, subjects: List[str]) -> List[Dict[str, Any]]:
+        """
+        Get triples where subject OR object matches the list of entities.
+        This allows for 1-hop traversal.
+        """
+        session = self._get_session()
+        try:
+            stmt = select(TripleModel).where(
+                TripleModel.collection_id == collection_id,
+                or_(
+                    TripleModel.subject.in_(subjects),
+                    TripleModel.object.in_(subjects)
+                )
+            )
+            triples = session.execute(stmt).scalars().all()
+            return [
+                {
+                    "subject": t.subject,
+                    "predicate": t.predicate,
+                    "object": t.object,
+                    "weight": t.weight
+                }
+                for t in triples
+            ]
+        finally:
+            session.close()

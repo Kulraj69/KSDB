@@ -33,15 +33,27 @@ class Collection:
         self,
         ids: List[str],
         documents: List[str],
-        metadatas: Optional[List[Dict[str, Any]]] = None
+        metadatas: Optional[List[Dict[str, Any]]] = None,
+        deduplicate: bool = False,
+        extract_graph: bool = False
     ):
-        """Add documents to collection - automatically uses batch API for speed"""
+        """
+        Add documents to collection.
+        
+        Args:
+            ids: List of unique IDs
+            documents: List of text documents
+            metadatas: List of metadata dicts
+            deduplicate: If True, skips documents that are semantically identical to existing ones
+            extract_graph: If True, automatically extracts entities and builds a knowledge graph
+        """
         if metadatas is None:
             metadatas = [{} for _ in ids]
         
         # Use batch endpoint for better performance
         response = requests.post(
             f"{self.client_url}/collections/{self.name}/add_batch",
+            params={"deduplicate": deduplicate, "extract_graph": extract_graph},
             json={
                 "ids": ids,
                 "documents": documents,
@@ -49,6 +61,7 @@ class Collection:
             }
         )
         response.raise_for_status()
+        return response.json()
     
     def query(
         self,
@@ -81,6 +94,29 @@ class Collection:
         if ids:
             for doc_id in ids:
                 requests.delete(f"{self.client_url}/collections/{self.name}/delete/{doc_id}")
+
+    def add_triples(self, triples: List[Dict[str, Any]]):
+        """
+        Add triples to the knowledge graph.
+        Format: [{"subject": "S", "predicate": "P", "object": "O"}]
+        """
+        response = requests.post(
+            f"{self.client_url}/collections/{self.name}/triples/add",
+            json={"triples": triples}
+        )
+        response.raise_for_status()
+        return response.json()
+        
+    def query_graph(self, entities: List[str]) -> List[Dict[str, Any]]:
+        """
+        Query the knowledge graph for connections to these entities.
+        """
+        response = requests.post(
+            f"{self.client_url}/collections/{self.name}/triples/query",
+            json={"entities": entities}
+        )
+        response.raise_for_status()
+        return response.json()
 
 
 class Client:
@@ -137,89 +173,4 @@ class Client:
 
 # Backwards compatibility
 KSdbClient = Client
-
-class Collection:
-    def __init__(self, client, name: str):
-        self.client = client
-        self.name = name
-
-    def add(self, ids: List[str], documents: List[str], metadatas: Optional[List[Dict[str, Any]]] = None):
-        if metadatas is None:
-            metadatas = [{} for _ in documents]
-            
-        if len(ids) != len(documents) or len(ids) != len(metadatas):
-            raise ValueError("ids, documents, and metadatas must have the same length")
-
-        url = f"{self.client.base_url}/collections/{self.name}/add"
-        results = []
-        for id, doc, meta in zip(ids, documents, metadatas):
-            payload = {
-                "id": id,
-                "text": doc,
-                "metadata": meta
-            }
-            response = requests.post(url, json=payload)
-            response.raise_for_status()
-            results.append(response.json())
-        return results
-
-    def query(self, query_texts: List[str], n_results: int = 5, where: Optional[Dict[str, Any]] = None):
-        # Currently API only supports single query string, so we loop
-        url = f"{self.client.base_url}/collections/{self.name}/query"
-        all_results = []
-        
-        for q in query_texts:
-            payload = {
-                "query": q,
-                "k": n_results,
-                "where": where
-            }
-            response = requests.post(url, json=payload)
-            response.raise_for_status()
-            all_results.append(response.json())
-            
-        return all_results
-
-    def delete(self):
-        url = f"{self.client.base_url}/collections/{self.name}"
-        response = requests.delete(url)
-        response.raise_for_status()
-        return response.json()
-
-class KSdbClient:
-    def __init__(self, base_url: str = "http://localhost:8000"):
-        self.base_url = base_url
-
-    def heartbeat(self):
-        return requests.get(f"{self.base_url}/health").json()
-
-    def create_collection(self, name: str, metadata: Dict[str, Any] = None) -> Collection:
-        url = f"{self.base_url}/collections"
-        payload = {"name": name, "metadata": metadata or {}}
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
-        return Collection(self, name)
-
-    def get_collection(self, name: str) -> Collection:
-        url = f"{self.base_url}/collections/{name}"
-        response = requests.get(url)
-        response.raise_for_status()
-        return Collection(self, name)
-
-    def get_or_create_collection(self, name: str, metadata: Dict[str, Any] = None) -> Collection:
-        try:
-            return self.get_collection(name)
-        except requests.exceptions.HTTPError:
-            return self.create_collection(name, metadata)
-
-    def list_collections(self) -> List[Dict[str, Any]]:
-        url = f"{self.base_url}/collections"
-        response = requests.get(url)
-        response.raise_for_status()
-        return response.json()
-
-    def delete_collection(self, name: str):
-        url = f"{self.base_url}/collections/{name}"
-        response = requests.delete(url)
-        response.raise_for_status()
 

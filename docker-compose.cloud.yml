@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: ksdb
+      POSTGRES_USER: ksdb
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ksdb" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # KSdb Cloud Server
+  ksdb-cloud:
+    build:
+      context: .
+      dockerfile: Dockerfile.cloud
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://ksdb:${DB_PASSWORD}@postgres:5432/ksdb
+      - ADMIN_KEY=${ADMIN_KEY}
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      - INDEX_PATH=/data/indices
+    volumes:
+      - ksdb_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Redis (optional, for caching)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+volumes:
+  postgres_data:
+  ksdb_data:
+  redis_data:

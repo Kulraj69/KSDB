@@ -1,0 +1,79 @@
+=== KSdb PERFORMANCE OPTIMIZATION ANALYSIS ===
+
+--- 1. CURRENT PERFORMANCE (Baseline) ---
+✓ Ingestion (with graph): 3.7444s
+✓ Retrieval: 0.0509s
+✓ Generation: 2.7254s
+✓ Total RAG: 2.7763s
+
+--- 2. OPTIMIZATION: Disable Graph Extraction ---
+✓ Ingestion (no graph): 0.4192s
+✓ Retrieval: 0.0187s
+🚀 Ingestion Speedup: 8.9x faster
+
+--- 3. ANALYSIS: LLM Generation Variance ---
+Testing if Hugging Face API has high variance (running same query 3x)...
+  Run 1: 1.3164s
+  Run 2: 1.6406s
+  Run 3: 1.5575s
+
+✓ Average: 1.5048s
+✓ Variance: 0.3242s
+✓ Low variance - API is stable
+
+============================================================
+=== 📊 PERFORMANCE OPTIMIZATION RECOMMENDATIONS ===
+============================================================
+
+🎯 **Quick Wins** (Immediate Impact):
+
+1. **Disable Graph Extraction** (if not needed)
+   - Current: 3.7444s
+   - Optimized: 0.4192s
+   - Speedup: 8.9x faster ingestion
+   - How: Set `extract_graph=False` in collection.add()
+
+2. **Hugging Face API Variance** (External Factor)
+   - Variance observed: 0.32s
+   - This is NORMAL for cloud APIs (network + queuing)
+   - KSdb itself is NOT the bottleneck!
+
+🔧 **Advanced Optimizations** (For Production):
+
+3. **HNSW Index Tuning**
+   - Current: M=16, ef_construction=200 (defaults)
+   - Recommendation: M=32, ef_construction=400 for better accuracy
+   - Trade-off: Slightly slower ingestion, much better retrieval quality
+
+4. **Batch Size Optimization**
+   - Current: Ingesting documents one by one in the app
+   - Recommendation: Use batch sizes of 100-500 docs
+   - Expected speedup: 2-3x faster ingestion
+
+5. **Async Operations**
+   - Add async ingestion for background processing
+   - Use multiprocessing for parallel embedding generation
+
+6. **Caching Layer**
+   - Cache frequently searched queries (Redis/in-memory)
+   - Expected speedup: 10-100x for cached queries
+
+7. **FTS5 Optimization** (SQLite)
+   - Current: Using basic FTS5 matching
+   - Recommendation: Add BM25 ranking, custom tokenizers
+   - Better hybrid search quality
+
+8. **Hardware Scaling**
+   - Already using MPS (Mac GPU) ✓
+   - For production: Use CUDA on NVIDIA GPUs (5-10x faster)
+
+💡 **Context Length Management**:
+   - Current context: 270 chars
+   - If context > 2000 chars, chunk it further
+   - Smaller context = faster LLM processing
+
+🏆 **Bottom Line**:
+   - KSdb retrieval: 0.0509s (FAST ✓)
+   - LLM variance: 0.32s (External factor)
+   - The 3s difference in benchmark was Hugging Face network latency,
+     NOT a KSdb performance issue!

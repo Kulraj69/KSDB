@@ -102,8 +102,21 @@ jobs:
               }"
           fi
           
-          # Wait for service
-          aws apprunner wait service-ready --service-arn $SERVICE_ARN --region ap-south-1
+          # Wait for service to be stable (Manual polling since 'wait' command doesn't exist)
+          echo "Waiting for service to reach RUNNING status..."
+          for i in {1..60}; do
+            STATUS=$(aws apprunner describe-service --service-arn $SERVICE_ARN --region ap-south-1 --query "Service.Status" --output text)
+            echo "Current status: $STATUS"
+            if [ "$STATUS" == "RUNNING" ]; then
+              echo "✅ Service is ready!"
+              break
+            fi
+            if [ "$STATUS" == "CREATE_FAILED" ] || [ "$STATUS" == "UPDATE_FAILED" ]; then
+              echo "❌ Service failed to start."
+              exit 1
+            fi
+            sleep 10
+          done
           
           # Get URL
           SERVICE_URL=$(aws apprunner describe-service --service-arn $SERVICE_ARN --region ap-south-1 --query "Service.ServiceUrl" --output text)

@@ -25,7 +25,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          aws-region: ap-south-1
       
       - name: Login to Amazon ECR
         id: login-ecr
@@ -50,13 +50,13 @@ jobs:
           ROLE_ARN: "arn:aws:iam::701544683046:role/service-role/AppRunnerECRAccessRole"
         run: |
           # Check if service exists
-          SERVICE_ARN=$(aws apprunner list-services --region us-east-1 --query "ServiceSummaryList[?ServiceName=='ksdb-cloud-service'].ServiceArn" --output text)
+          SERVICE_ARN=$(aws apprunner list-services --region ap-south-1 --query "ServiceSummaryList[?ServiceName=='ksdb-cloud-service'].ServiceArn" --output text)
           
           if [ -z "$SERVICE_ARN" ]; then
             echo "Creating new App Runner service..."
             aws apprunner create-service \
               --service-name ksdb-cloud-service \
-              --region us-east-1 \
+              --region ap-south-1 \
               --source-configuration "{
                 \"AuthenticationConfiguration\": {
                   \"AccessRoleArn\": \"$ROLE_ARN\"
@@ -90,7 +90,7 @@ jobs:
             echo "Updating existing App Runner service..."
             aws apprunner update-service \
               --service-arn $SERVICE_ARN \
-              --region us-east-1 \
+              --region ap-south-1 \
               --source-configuration "{
                 \"AuthenticationConfiguration\": {
                   \"AccessRoleArn\": \"$ROLE_ARN\"
@@ -103,10 +103,10 @@ jobs:
           fi
           
           # Wait for service
-          aws apprunner wait service-ready --service-arn $SERVICE_ARN --region us-east-1
+          aws apprunner wait service-ready --service-arn $SERVICE_ARN --region ap-south-1
           
           # Get URL
-          SERVICE_URL=$(aws apprunner describe-service --service-arn $SERVICE_ARN --region us-east-1 --query "Service.ServiceUrl" --output text)
+          SERVICE_URL=$(aws apprunner describe-service --service-arn $SERVICE_ARN --region ap-south-1 --query "Service.ServiceUrl" --output text)
           
           echo "🎉 Deployment complete!"
           echo "Service URL: https://$SERVICE_URL"

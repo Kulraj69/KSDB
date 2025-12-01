@@ -16,18 +16,28 @@ app = FastAPI(title="KSdb", description="Custom Vector Database with Collections
 import torch
 
 # Initialize components
-print("Loading embedding model...")
-device = "cpu"
-if torch.cuda.is_available():
-    device = "cuda"
-    print("🚀 Hardware Acceleration: CUDA (NVIDIA GPU) Enabled")
-elif torch.backends.mps.is_available():
-    device = "mps"
-    print("🚀 Hardware Acceleration: MPS (Mac GPU) Enabled")
-else:
-    print("⚠️ Hardware Acceleration: Disabled (CPU Mode)")
+# Lazy load model to prevent startup timeout on cloud
+class LazyModel:
+    def __init__(self):
+        self._model = None
+        self.device = "cpu"
+        if torch.cuda.is_available():
+            self.device = "cuda"
+            print("🚀 Hardware Acceleration: CUDA (NVIDIA GPU) Enabled")
+        elif torch.backends.mps.is_available():
+            self.device = "mps"
+            print("🚀 Hardware Acceleration: MPS (Mac GPU) Enabled")
+        else:
+            print("⚠️ Hardware Acceleration: Disabled (CPU Mode)")
 
-model = SentenceTransformer(os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2"), device=device)
+    def encode(self, *args, **kwargs):
+        if self._model is None:
+            print("Loading embedding model (lazy)...")
+            model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+            self._model = SentenceTransformer(model_name, device=self.device)
+        return self._model.encode(*args, **kwargs)
+
+model = LazyModel()
 print("Loading vector index...")
 vector_index = VectorIndex(dim=int(os.getenv("VECTOR_DIM", "384")))
 print("Loading metadata DB...")

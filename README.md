@@ -10,7 +10,7 @@
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen?style=flat-square)](https://github.com/Kulraj69/KSDB)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](http://makeapullrequest.com)
 
-[Documentation](https://github.com/Kulraj69/KSDB/wiki) • [Quick Start](#quick-start) • [Benchmarks](#performance-benchmarks) • [API Reference](#api-reference) • [Community](https://github.com/Kulraj69/KSDB/discussions)
+[How To Use](docs/HOW_TO_USE.md) • [Next Steps](docs/NEXT_STEPS.md) • [Current Market](docs/CURRENT_MARKET.md) • [Roadmap](ROADMAP.md) • [Quick Start](#quick-start) • [Benchmarks](#performance-benchmarks) • [API Reference](#api-reference)
 
 </div>
 
@@ -93,7 +93,7 @@ Or install from source:
 
 ```bash
 git clone https://github.com/Kulraj69/KSDB.git
-cd KSdb
+cd KSDB
 pip install -e .
 ```
 
@@ -141,7 +141,28 @@ results = collection.query(
     n_results=5,
     where={"price": {"$lt": 1500}}
 )
+
+# Explain why each result ranked where it did
+debug = collection.explain_query(
+    query_texts=["best laptop for programming"],
+    n_results=5,
+    where={"price": {"$lt": 1500}}
+)
+print(debug["profile"])
 ```
+
+### Live Public Data Example
+
+Ingest recent Hacker News stories about RAG/vector databases without an API key:
+
+```bash
+python examples/ingest_hacker_news.py \
+  --query "RAG vector database" \
+  --limit 25 \
+  --collection live_hacker_news
+```
+
+See the full guide in [docs/HOW_TO_USE.md](docs/HOW_TO_USE.md).
 
 ---
 
@@ -265,14 +286,7 @@ collection.add(
 
 ### OCR Processing
 
-```python
-# Automatically handles scanned PDFs
-from ksdb.utils import ingest_pdf
-
-# Falls back to OCR if text extraction fails
-chunks = ingest_pdf("scanned_document.pdf", use_ocr=True)
-collection.add(ids=[...], documents=chunks)
-```
+The Streamlit demo in `app.py` includes PDF/TXT upload and OCR fallback for scanned PDFs. For production ingestion, extract text into chunks first, then call `collection.add(ids=[...], documents=chunks)`.
 
 ---
 
@@ -306,7 +320,9 @@ Interactive API documentation available at `http://localhost:8000/docs` (Swagger
 **Core Endpoints:**
 - `POST /collections/{name}/add` - Add documents
 - `POST /collections/{name}/query` - Search documents
+- `POST /collections/{name}/query/explain` - Search with hybrid ranking diagnostics
 - `GET /collections/{name}/graph` - Query knowledge graph
+- `DELETE /collections/{name}/delete/{doc_id}` - Delete a document
 - `DELETE /collections/{name}` - Delete collection
 
 ### Python SDK
@@ -325,12 +341,13 @@ collections = client.list_collections()
 
 # Document operations
 collection.add(ids, documents, metadatas, deduplicate, extract_graph)
-collection.query(query_texts, n_results, where, where_document)
+collection.query(query_texts, n_results, where)
+collection.explain_query(query_texts, n_results, where)
 collection.update(ids, documents, metadatas)
 collection.delete(ids)
 
 # Knowledge graph
-collection.get_graph(subjects, limit)
+collection.get_graph(subjects)
 ```
 
 ---
@@ -453,22 +470,16 @@ Full optimization guide: [Performance Tuning](https://github.com/Kulraj69/KSDB/w
 
 ## Roadmap
 
-**Q1 2025**
-- [ ] Multi-tenancy with authentication
-- [ ] Horizontal scaling (multi-node)
-- [ ] Web dashboard (React)
+The roadmap has been refreshed for 2026 based on what production retrieval systems now need: hybrid search quality, filter-aware retrieval, reranking, query profiling, backups, tenant isolation, and agent/MCP workflows.
 
-**Q2 2025**
-- [ ] LangChain official integration
-- [ ] Managed cloud offering
-- [ ] Enterprise features (RBAC, audit logs)
+Immediate next work:
+- [ ] Add `where_document` filters and optional BM25/FTS score exposure
+- [ ] Add MMR/reranking options for better RAG context diversity
+- [ ] Add backup, restore, migration, and index rebuild commands
+- [ ] Align Docker/server deployment with the package server API
+- [ ] Publish reproducible benchmarks against Chroma, Qdrant, pgvector, and Weaviate
 
-**Q3 2025**
-- [ ] Multi-modal support (images, audio)
-- [ ] Real-time streaming ingestion
-- [ ] Advanced analytics dashboard
-
-[View full roadmap](https://github.com/Kulraj69/KSDB/projects)
+See [ROADMAP.md](ROADMAP.md) for the full staged plan and [docs/CURRENT_MARKET.md](docs/CURRENT_MARKET.md) for the current market context.
 
 ---
 
@@ -542,6 +553,6 @@ KSdb is built on the shoulders of giants:
 
 [⭐ Star us on GitHub](https://github.com/Kulraj69/KSDB) • [📖 Read the Docs](https://github.com/Kulraj69/KSDB/wiki) • [🚀 Get Started](#quick-start)
 
-<sub>© 2025 KSdb. All rights reserved.</sub>
+<sub>© 2026 KSdb. All rights reserved.</sub>
 
 </div>

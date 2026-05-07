@@ -2,21 +2,26 @@ version: '3.8'
 
 services:
   server:
-    build: ./server
+    build:
+      context: .
+      dockerfile: Dockerfile.cloud
+    command: ["python", "-m", "ksdb.server"]
     ports:
       - "8000:8000"
     environment:
       - DATABASE_URL=postgresql://user:password@postgres:5432/ksdb
-      - S3_BUCKET_NAME=ksdb-1
-      - AWS_REGION=us-east-1
+      - KSDB_DATA_PATH=/data
+      # Optional S3 persistence for vector index files:
+      # - S3_BUCKET_NAME=your-bucket
+      # - AWS_REGION=us-east-1
       # Uncomment and fill these if running locally without ~/.aws/credentials
       # - AWS_ACCESS_KEY_ID=your_access_key
       # - AWS_SECRET_ACCESS_KEY=your_secret_key
     depends_on:
       - postgres
     volumes:
-      - ./server/indices:/app/indices
-      - ~/.aws:/root/.aws:ro # Mount local AWS creds if available
+      - ksdb_data:/data
+      # - ~/.aws:/root/.aws:ro # Mount local AWS creds if using S3
 
   postgres:
     image: postgres:15-alpine
@@ -31,3 +36,4 @@ services:
 
 volumes:
   postgres_data:
+  ksdb_data:

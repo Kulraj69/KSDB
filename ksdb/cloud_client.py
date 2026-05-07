@@ -110,18 +110,16 @@ class CloudCollection:
         self,
         query_texts: List[str],
         n_results: int = 10,
-        where: Optional[Dict[str, Any]] = None,
-        where_document: Optional[Dict[str, Any]] = None
+        where: Optional[Dict[str, Any]] = None
     ):
         """Query collection"""
         response = requests.post(
             f"{self.client.url}/collections/{self.name}/query",
             headers=self.client.headers,
             json={
-                "query_texts": query_texts,
+                "query": query_texts[0],
                 "k": n_results,
-                "filter": where,
-                "where_document": where_document
+                "where": where,
             }
         )
         response.raise_for_status()
@@ -133,8 +131,30 @@ class CloudCollection:
             "ids": [[r["id"] for r in results]],
             "documents": [[r["text"] for r in results]],
             "metadatas": [[r["metadata"] for r in results]],
-            "distances": [[r["distance"] for r in results]]
+            "distances": [[r["score"] for r in results]]
         }
+
+    def explain_query(
+        self,
+        query_texts: List[str],
+        n_results: int = 10,
+        where: Optional[Dict[str, Any]] = None
+    ):
+        """Query collection with ranking and timing details."""
+        if not query_texts:
+            raise ValueError("query_texts must contain at least one query")
+
+        response = requests.post(
+            f"{self.client.url}/collections/{self.name}/query/explain",
+            headers=self.client.headers,
+            json={
+                "query": query_texts[0],
+                "k": n_results,
+                "where": where,
+            }
+        )
+        response.raise_for_status()
+        return response.json()
     
     def get_graph(self, subjects: List[str]):
         """Get knowledge graph"""

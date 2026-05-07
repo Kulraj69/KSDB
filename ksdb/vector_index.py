@@ -1,23 +1,26 @@
 import hnswlib
 import numpy as np
 import os
-import pickle
-import boto3
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple
 
 class VectorIndex:
-    def __init__(self, dim: int, max_elements: int = 10000, persistence_dir: str = "indices"):
+    def __init__(self, dim: int, max_elements: int = 10000, persistence_dir: str = None):
         self.dim = dim
         self.max_elements = max_elements
-        self.persistence_dir = persistence_dir
+        data_path = os.getenv("KSDB_DATA_PATH", ".ksdb")
+        self.persistence_dir = persistence_dir or os.getenv("INDEX_PATH") or os.path.join(data_path, "indices")
         self.indices: Dict[str, hnswlib.Index] = {}
         
         # S3 Configuration
         self.s3_bucket = os.getenv("S3_BUCKET_NAME")
-        self.s3_client = boto3.client("s3") if self.s3_bucket else None
+        self.s3_client = None
+        if self.s3_bucket:
+            import boto3
+
+            self.s3_client = boto3.client("s3")
         
-        if not os.path.exists(persistence_dir):
-            os.makedirs(persistence_dir)
+        if not os.path.exists(self.persistence_dir):
+            os.makedirs(self.persistence_dir)
             
         if self.s3_client:
             print(f"S3 Persistence Enabled. Bucket: {self.s3_bucket}")
@@ -86,6 +89,17 @@ class VectorIndex:
 
     def add_items(self, collection_id: str, vectors: np.ndarray, ids: np.ndarray):
         index = self._load_or_create_index(collection_id)
+        needed_capacity = index.element_count + len(ids)
+        try:
+            current_capacity = index.get_max_elements()
+        except AttributeError:
+            current_capacity = self.max_elements
+
+        if needed_capacity > current_capacity:
+            new_capacity = max(needed_capacity, int(current_capacity * 1.5), current_capacity + 1000)
+            index.resize_index(new_capacity)
+            self.max_elements = max(self.max_elements, new_capacity)
+
         index.add_items(vectors, ids)
         self.save(collection_id)
 
@@ -99,7 +113,12 @@ class VectorIndex:
         current_k = min(k, index.element_count)
         
         labels, distances = index.knn_query(query_vector, k=current_k)
-        return labels[0], distances[0]
+        if len(labels) == 1:
+            return labels[0], distances[0]
+        return labels, distances
+
+    def count(self, collection_id: str) -> int:
+        return self._load_or_create_index(collection_id).element_count
 
     def delete_collection(self, collection_id: str):
         if collection_id in self.indices:
@@ -116,9 +135,13 @@ class VectorIndex:
                 print(f"Error deleting from S3: {e}")
 
     def delete_item(self, collection_id: str, id: int):
-        # Still limited support in HNSWlib
-        print(f"Warning: Delete item not fully supported in raw HNSWlib without rebuild.")
-        pass
+        index = self._load_or_create_index(collection_id)
+        try:
+            index.mark_deleted(id)
+            self.save(collection_id)
+            return True
+        except RuntimeError:
+            return False
 
     def save(self, collection_id: str):
         if collection_id in self.indices:

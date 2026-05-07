@@ -11,7 +11,7 @@ def main():
     parser.add_argument("command", choices=["run", "version"], help="Command to execute")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
-    parser.add_argument("--path", default=".ksdb", help="Path to store data")
+    parser.add_argument("--path", "--data-dir", dest="path", default=".ksdb", help="Path to store data")
     
     args = parser.parse_args()
     

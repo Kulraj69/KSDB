@@ -44,15 +44,19 @@ ksdb run --port 9000
 
 ## Advanced: Use with PostgreSQL + S3
 
+Configure the server with environment variables, then connect with the normal client:
+
+```bash
+export DATABASE_URL="postgresql://user:pass@host:5432/db"
+export S3_BUCKET_NAME="my-vectors"
+export AWS_REGION="us-east-1"
+ksdb run --path .ksdb
+```
+
 ```python
 import ksdb
 
-client = ksdb.Client(
-    backend="s3",
-    database_url="postgresql://user:pass@host:5432/db",
-    bucket_name="my-vectors",
-    region="us-east-1"
-)
+client = ksdb.Client("http://127.0.0.1:8000")
 ```
 
-**No AWS knowledge needed for basic use!** 🎉
+For a fuller walkthrough, see [docs/HOW_TO_USE.md](docs/HOW_TO_USE.md).

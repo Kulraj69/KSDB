@@ -1,11 +1,12 @@
-from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 from sentence_transformers import SentenceTransformer
 import numpy as np
 import os
 import uvicorn
 import uuid
+import time
 
 from .vector_index import VectorIndex
 from .db import MetadataDB
@@ -57,7 +58,7 @@ def root():
 
 class CreateCollectionRequest(BaseModel):
     name: str
-    metadata: Dict[str, Any] = {}
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 class CollectionResponse(BaseModel):
     id: str
@@ -66,12 +67,12 @@ class CollectionResponse(BaseModel):
 
 class Document(BaseModel):
     id: str # Changed to string to support UUIDs
-    text: str
-    metadata: Dict[str, Any] = {}
+    text: str = Field(min_length=1)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 class SearchQuery(BaseModel):
-    query: str
-    k: int = 5
+    query: str = Field(min_length=1)
+    k: int = Field(default=5, gt=0, le=1000)
     where: Optional[Dict[str, Any]] = None # Metadata filter
 
 class SearchResult(BaseModel):
@@ -79,6 +80,28 @@ class SearchResult(BaseModel):
     score: float
     text: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+
+class SearchExplainResult(SearchResult):
+    rrf_score: float
+    vector_rank: Optional[int] = None
+    vector_distance: Optional[float] = None
+    keyword_rank: Optional[int] = None
+    matched_by: List[str] = Field(default_factory=list)
+
+class SearchProfile(BaseModel):
+    collection_id: str
+    requested_k: int
+    total_indexed_vectors: int
+    metadata_filter_applied: bool
+    metadata_filter_matches: Optional[int] = None
+    vector_candidates: int
+    keyword_candidates: int
+    fused_candidates: int
+    timings_ms: Dict[str, float]
+
+class SearchExplainResponse(BaseModel):
+    results: List[SearchExplainResult]
+    profile: SearchProfile
 
 # --- Helpers ---
 
@@ -88,65 +111,132 @@ def get_collection_or_404(name: str):
         raise HTTPException(status_code=404, detail=f"Collection '{name}' not found")
     return collection
 
-def _matches_filter(metadata: Dict[str, Any], filter_dict: Dict[str, Any]) -> bool:
-    """
-    Check if metadata matches the filter dictionary.
-    Supports ChromaDB-style operators: $eq, $ne, $gt, $gte, $lt, $lte, $in, $nin
-    And logical operators: $and, $or
-    """
-    for key, value in filter_dict.items():
-        # Handle logical operators
-        if key == "$and":
-            if not isinstance(value, list):
-                return False
-            if not all(_matches_filter(metadata, sub_filter) for sub_filter in value):
-                return False
+def _hnsw_id_for_document(doc_id: str) -> int:
+    hnsw_id = int(uuid.uuid5(uuid.NAMESPACE_DNS, doc_id).int >> 64)
+    return hnsw_id & ((1 << 63) - 1)
+
+def _elapsed_ms(start: float) -> float:
+    return round((time.perf_counter() - start) * 1000, 3)
+
+def _ranked_lookup(ids: List[str]) -> Dict[str, int]:
+    return {doc_id: rank + 1 for rank, doc_id in enumerate(ids)}
+
+def _run_hybrid_search(name: str, q: SearchQuery, include_profile: bool = False):
+    collection = get_collection_or_404(name)
+    timings = {}
+
+    start = time.perf_counter()
+    query_emb = model.encode(q.query)
+    timings["embedding"] = _elapsed_ms(start)
+
+    start = time.perf_counter()
+    total_indexed_vectors = vector_index.count(collection["id"])
+    allowed_ids = None
+    if q.where:
+        allowed_ids = set(meta_db.query(collection["id"], q.where) or [])
+        if not allowed_ids:
+            profile = SearchProfile(
+                collection_id=collection["id"],
+                requested_k=q.k,
+                total_indexed_vectors=total_indexed_vectors,
+                metadata_filter_applied=True,
+                metadata_filter_matches=0,
+                vector_candidates=0,
+                keyword_candidates=0,
+                fused_candidates=0,
+                timings_ms={**timings, "metadata_filter": _elapsed_ms(start)},
+            )
+            return [], profile
+    timings["metadata_filter"] = _elapsed_ms(start)
+
+    start = time.perf_counter()
+    search_k = total_indexed_vectors if q.where else q.k
+    hnsw_ids, distances = vector_index.search(collection["id"], np.array([query_emb]), k=search_k)
+    hnsw_ids_list = [int(id) for id in hnsw_ids]
+    docs_map = meta_db.get_by_int_ids(collection["id"], hnsw_ids_list)
+
+    vector_results = []
+    for i, hnsw_id in enumerate(hnsw_ids_list):
+        doc = docs_map.get(hnsw_id)
+        if not doc:
             continue
-        if key == "$or":
-            if not isinstance(value, list):
-                return False
-            if not any(_matches_filter(metadata, sub_filter) for sub_filter in value):
-                return False
+        if allowed_ids is not None and doc["id"] not in allowed_ids:
             continue
-            
-        # Handle field filters
-        doc_val = metadata.get(key)
-        
-        # Direct equality check (e.g. {"category": "tech"})
-        if not isinstance(value, dict):
-            if doc_val != value:
-                return False
+        vector_results.append({"id": doc["id"], "distance": float(distances[i]), "doc": doc})
+    timings["vector_search"] = _elapsed_ms(start)
+
+    start = time.perf_counter()
+    fts_limit = max(q.k * 4, len(allowed_ids) if allowed_ids is not None else q.k * 2)
+    fts_ids = meta_db.search_fts(collection["id"], q.query, limit=fts_limit)
+    if allowed_ids is not None:
+        fts_ids = [doc_id for doc_id in fts_ids if doc_id in allowed_ids]
+    timings["keyword_search"] = _elapsed_ms(start)
+
+    start = time.perf_counter()
+    rrf_k = 60
+    scores = {}
+    vector_ids = [res["id"] for res in vector_results]
+    vector_ranks = _ranked_lookup(vector_ids)
+    keyword_ranks = _ranked_lookup(fts_ids)
+    vector_distances = {res["id"]: res["distance"] for res in vector_results}
+
+    for rank, doc_id in enumerate(vector_ids):
+        scores.setdefault(doc_id, 0)
+        scores[doc_id] += 1 / (rrf_k + rank + 1)
+
+    for rank, doc_id in enumerate(fts_ids):
+        scores.setdefault(doc_id, 0)
+        scores[doc_id] += 1 / (rrf_k + rank + 1)
+
+    sorted_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:q.k]
+    docs_by_id = meta_db.get_by_ids(collection["id"], sorted_ids)
+    vector_docs_by_id = {res["id"]: res["doc"] for res in vector_results}
+
+    results = []
+    for doc_id in sorted_ids:
+        found_doc = vector_docs_by_id.get(doc_id) or docs_by_id.get(doc_id)
+        if not found_doc:
             continue
-            
-        # Operator checks (e.g. {"price": {"$gt": 10}})
-        for op, op_val in value.items():
-            if op == "$eq":
-                if doc_val != op_val: return False
-            elif op == "$ne":
-                if doc_val == op_val: return False
-            elif op == "$gt":
-                if not (isinstance(doc_val, (int, float)) and isinstance(op_val, (int, float))): return False
-                if not doc_val > op_val: return False
-            elif op == "$gte":
-                if not (isinstance(doc_val, (int, float)) and isinstance(op_val, (int, float))): return False
-                if not doc_val >= op_val: return False
-            elif op == "$lt":
-                if not (isinstance(doc_val, (int, float)) and isinstance(op_val, (int, float))): return False
-                if not doc_val < op_val: return False
-            elif op == "$lte":
-                if not (isinstance(doc_val, (int, float)) and isinstance(op_val, (int, float))): return False
-                if not doc_val <= op_val: return False
-            elif op == "$in":
-                if not isinstance(op_val, list): return False
-                if doc_val not in op_val: return False
-            elif op == "$nin":
-                if not isinstance(op_val, list): return False
-                if doc_val in op_val: return False
-            else:
-                # Unknown operator or nested dict, treat as inequality if not dict
-                return False
-                
-    return True
+
+        matched_by = []
+        if doc_id in vector_ranks:
+            matched_by.append("vector")
+        if doc_id in keyword_ranks:
+            matched_by.append("keyword")
+
+        if include_profile:
+            results.append(SearchExplainResult(
+                id=found_doc["id"],
+                score=scores[doc_id],
+                rrf_score=scores[doc_id],
+                vector_rank=vector_ranks.get(doc_id),
+                vector_distance=vector_distances.get(doc_id),
+                keyword_rank=keyword_ranks.get(doc_id),
+                matched_by=matched_by,
+                text=found_doc["text"],
+                metadata=found_doc["metadata"],
+            ))
+        else:
+            results.append(SearchResult(
+                id=found_doc["id"],
+                score=scores[doc_id],
+                text=found_doc["text"],
+                metadata=found_doc["metadata"],
+            ))
+
+    timings["fusion"] = _elapsed_ms(start)
+    profile = SearchProfile(
+        collection_id=collection["id"],
+        requested_k=q.k,
+        total_indexed_vectors=total_indexed_vectors,
+        metadata_filter_applied=q.where is not None,
+        metadata_filter_matches=len(allowed_ids) if allowed_ids is not None else None,
+        vector_candidates=len(vector_results),
+        keyword_candidates=len(fts_ids),
+        fused_candidates=len(scores),
+        timings_ms=timings,
+    )
+    return results, profile
 
 # --- Collection Endpoints ---
 
@@ -187,16 +277,20 @@ async def upsert(name: str, doc: Document):
         embedding = model.encode(doc.text)
         
         # 2. Generate HNSW ID (int) from UUID (str)
-        hnsw_id = int(uuid.uuid5(uuid.NAMESPACE_DNS, doc.id).int >> 64)
-        hnsw_id = hnsw_id & ((1 << 63) - 1)
+        hnsw_id = _hnsw_id_for_document(doc.id)
 
         # 3. Store in Vector Index
         vector_index.add_items(collection["id"], np.array([embedding]), np.array([hnsw_id]))
         
         # 4. Store in Metadata DB
         meta_db.insert(collection["id"], doc.id, hnsw_id, doc.text, doc.metadata)
+
+        # 5. Store in keyword index for hybrid search
+        meta_db.insert_fts_batch(collection["id"], [doc.id], [doc.text])
         
         return {"status": "success", "id": doc.id}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -219,6 +313,16 @@ async def upsert_batch(
     Batch insert with optional smart deduplication and auto-graph extraction.
     """
     collection = get_collection_or_404(name)
+
+    if not batch.ids:
+        raise HTTPException(status_code=400, detail="ids must contain at least one document")
+    if len(batch.ids) != len(batch.documents):
+        raise HTTPException(status_code=400, detail="ids and documents must have the same length")
+    if any(not document for document in batch.documents):
+        raise HTTPException(status_code=400, detail="documents must not contain empty strings")
+    if batch.metadatas is not None and len(batch.metadatas) != len(batch.ids):
+        raise HTTPException(status_code=400, detail="metadatas must have the same length as ids")
+
     try:
         # Default metadatas if not provided
         if batch.metadatas is None:
@@ -235,7 +339,7 @@ async def upsert_batch(
             # Search for nearest neighbor for each new vector
             # k=1 is enough to find the closest match
             # We need to handle the case where index is empty
-            if vector_index.indices.get(collection["id"]) and vector_index.indices[collection["id"]].element_count > 0:
+            if vector_index.count(collection["id"]) > 0:
                 ids, distances = vector_index.search(collection["id"], embeddings, k=1)
                 
                 for i, dist in enumerate(distances):
@@ -290,9 +394,7 @@ async def upsert_batch(
         # 4. Generate HNSW IDs
         hnsw_ids = []
         for doc_id in final_ids:
-            hnsw_id = int(uuid.uuid5(uuid.NAMESPACE_DNS, doc_id).int >> 64)
-            hnsw_id = hnsw_id & ((1 << 63) - 1)
-            hnsw_ids.append(hnsw_id)
+            hnsw_ids.append(_hnsw_id_for_document(doc_id))
         
         hnsw_ids_array = np.array(hnsw_ids)
         
@@ -317,97 +419,45 @@ async def upsert_batch(
             "skipped": skipped_count,
             "triples_extracted": extracted_triples_count
         }
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/collections/{name}/query", response_model=List[SearchResult])
-async def search(name: str, q: SearchQuery):
+@app.delete("/collections/{name}/delete/{doc_id}")
+async def delete_document(name: str, doc_id: str):
     collection = get_collection_or_404(name)
     try:
-        # 1. Generate query embedding
-        query_emb = model.encode(q.query)
-        
-        # 2. Hybrid Search Logic
-        # A. Vector Search
-        search_k = q.k * 2 if q.where else q.k
-        hnsw_ids, distances = vector_index.search(collection["id"], np.array([query_emb]), k=search_k)
-        
-        vector_results = []
-        hnsw_ids_list = [int(id) for id in hnsw_ids]
-        
-        # Map HNSW IDs back to String IDs
-        # We need a way to get String IDs from HNSW IDs efficiently. 
-        # For now, we fetch the docs and get IDs.
-        docs_map = meta_db.get_by_int_ids(collection["id"], hnsw_ids_list)
-        
-        for i, hnsw_id in enumerate(hnsw_ids_list):
-            doc = docs_map.get(hnsw_id)
-            if doc:
-                vector_results.append({"id": doc["id"], "score": float(distances[i]), "doc": doc})
+        hnsw_id = _hnsw_id_for_document(doc_id)
+        vector_index.delete_item(collection["id"], hnsw_id)
+        deleted = meta_db.delete(collection["id"], doc_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Document '{doc_id}' not found")
+        return {"status": "deleted", "id": doc_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        # B. Keyword Search (FTS)
-        keyword_results = []
-        fts_ids = meta_db.search_fts(collection["id"], q.query, limit=q.k * 2)
-        
-        # We need to fetch docs for FTS results too if they aren't in vector results
-        missing_fts_ids = [fid for fid in fts_ids if fid not in [r["id"] for r in vector_results]]
-        # This part is tricky without a "get_by_ids" method in db.py that takes string IDs.
-        # For MVP, we might skip fetching full docs for FTS-only results or add a method.
-        # Let's add a simple fetch for now.
-        
-        # C. Reciprocal Rank Fusion (RRF)
-        # RRF Score = 1 / (k + rank)
-        rrf_k = 60
-        scores = {}
-        
-        # Score Vector Results
-        for rank, res in enumerate(vector_results):
-            if res["id"] not in scores: scores[res["id"]] = 0
-            scores[res["id"]] += 1 / (rrf_k + rank + 1)
-            
-        # Score Keyword Results
-        for rank, doc_id in enumerate(fts_ids):
-            if doc_id not in scores: scores[doc_id] = 0
-            scores[doc_id] += 1 / (rrf_k + rank + 1)
-            
-        # Sort by RRF Score
-        sorted_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:q.k]
-        
-        # Fetch final documents
-        # We need to fetch any docs we don't have yet.
-        # Re-using docs_map from vector search is good, but we might need more.
-        # Let's just fetch the final set to be safe and clean.
-        # We need a get_by_ids method in MetadataDB. Let's assume we add it or use get() in loop.
-        
-        results = []
-        for doc_id in sorted_ids:
-            # Check if we already have it
-            found_doc = None
-            for res in vector_results:
-                if res["id"] == doc_id:
-                    found_doc = res["doc"]
-                    break
-            
-            if not found_doc:
-                # Fetch from DB
-                found_doc = meta_db.get(collection["id"], doc_id)
-                
-            if found_doc:
-                # Apply Filter
-                if q.where:
-                    if not _matches_filter(found_doc["metadata"], q.where):
-                        continue
-                        
-                results.append(SearchResult(
-                    id=found_doc["id"],
-                    score=scores[doc_id], # RRF Score
-                    text=found_doc["text"],
-                    metadata=found_doc["metadata"]
-                ))
-        
+@app.post("/collections/{name}/query", response_model=List[SearchResult])
+async def search(name: str, q: SearchQuery):
+    try:
+        results, _ = _run_hybrid_search(name, q)
         return results
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/collections/{name}/query/explain", response_model=SearchExplainResponse)
+async def explain_search(name: str, q: SearchQuery):
+    try:
+        results, profile = _run_hybrid_search(name, q, include_profile=True)
+        return SearchExplainResponse(results=results, profile=profile)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -445,9 +495,13 @@ async def query_graph(name: str, q: GraphQuery):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+@app.get("/collections/{name}/graph")
+async def get_graph(name: str, subjects: List[str]):
+    collection = get_collection_or_404(name)
+    try:
+        return meta_db.get_triples(collection["id"], subjects)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

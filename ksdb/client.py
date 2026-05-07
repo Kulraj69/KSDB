@@ -47,8 +47,15 @@ class Collection:
             deduplicate: If True, skips documents that are semantically identical to existing ones
             extract_graph: If True, automatically extracts entities and builds a knowledge graph
         """
+        if len(ids) != len(documents):
+            raise ValueError("ids and documents must have the same length")
+        if not ids:
+            raise ValueError("ids must contain at least one document")
+
         if metadatas is None:
             metadatas = [{} for _ in ids]
+        elif len(metadatas) != len(ids):
+            raise ValueError("metadatas must have the same length as ids")
         
         # Use batch endpoint for better performance
         response = requests.post(
@@ -70,6 +77,9 @@ class Collection:
         where: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Query the collection"""
+        if not query_texts:
+            raise ValueError("query_texts must contain at least one query")
+
         response = requests.post(
             f"{self.client_url}/collections/{self.name}/query",
             json={
@@ -88,12 +98,48 @@ class Collection:
             "metadatas": [[r["metadata"] for r in data]],
             "distances": [[r["score"] for r in data]]
         }
+
+    def explain_query(
+        self,
+        query_texts: List[str],
+        n_results: int = 10,
+        where: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Query the collection and return ranking/debug details.
+
+        Unlike query(), this returns the raw explain payload with per-result
+        vector/keyword ranks plus a profile of candidate counts and timings.
+        """
+        if not query_texts:
+            raise ValueError("query_texts must contain at least one query")
+
+        response = requests.post(
+            f"{self.client_url}/collections/{self.name}/query/explain",
+            json={
+                "query": query_texts[0],
+                "k": n_results,
+                "where": where
+            }
+        )
+        response.raise_for_status()
+        return response.json()
     
     def delete(self, ids: Optional[List[str]] = None):
         """Delete documents from collection"""
         if ids:
             for doc_id in ids:
-                requests.delete(f"{self.client_url}/collections/{self.name}/delete/{doc_id}")
+                response = requests.delete(f"{self.client_url}/collections/{self.name}/delete/{doc_id}")
+                response.raise_for_status()
+
+    def update(
+        self,
+        ids: List[str],
+        documents: List[str],
+        metadatas: Optional[List[Dict[str, Any]]] = None,
+    ):
+        """Update documents. KSdb upserts by ID, so this delegates to add()."""
+        return self.add(ids=ids, documents=documents, metadatas=metadatas)
 
     def add_triples(self, triples: List[Dict[str, Any]]):
         """
@@ -117,6 +163,10 @@ class Collection:
         )
         response.raise_for_status()
         return response.json()
+
+    def get_graph(self, subjects: List[str]) -> List[Dict[str, Any]]:
+        """Alias for query_graph for README/API compatibility."""
+        return self.query_graph(subjects)
 
 
 class Client:
@@ -173,4 +223,3 @@ class Client:
 
 # Backwards compatibility
 KSdbClient = Client
-

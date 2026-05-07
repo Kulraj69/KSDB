@@ -11,7 +11,6 @@ import uvicorn
 # Import existing components
 from ksdb.auth import get_current_tenant, auth_manager
 from ksdb.server import (
-    app as base_app,
     model,
     vector_index,
     meta_db,
@@ -19,7 +18,8 @@ from ksdb.server import (
     BatchDocument,
     SearchQuery,
     SearchResult,
-    CollectionCreate
+    SearchExplainResponse,
+    CreateCollectionRequest
 )
 
 # Create FastAPI app
@@ -68,7 +68,7 @@ async def revoke_api_key(key: str, tenant_id: str = Depends(get_current_tenant))
 # Protected Collection Endpoints
 @app.post("/collections")
 async def create_collection(
-    request: CollectionCreate,
+    request: CreateCollectionRequest,
     tenant_id: str = Depends(get_current_tenant)
 ):
     """Create a collection (tenant-isolated)"""
@@ -80,7 +80,6 @@ async def create_collection(
         raise HTTPException(status_code=400, detail="Collection already exists")
     
     collection = meta_db.create_collection(collection_name, request.metadata or {})
-    vector_index.create_collection(collection["id"])
     
     return {
         "name": request.name,  # Return original name
@@ -187,6 +186,23 @@ async def query_collection(
     
     results = await search(name=collection_name, q=query)
     return results
+
+@app.post("/collections/{name}/query/explain", response_model=SearchExplainResponse)
+async def explain_query_collection(
+    name: str,
+    query: SearchQuery,
+    tenant_id: str = Depends(get_current_tenant)
+):
+    """Query collection with ranking/profile details (tenant-isolated)"""
+    collection_name = f"{tenant_id}_{name}"
+    collection = meta_db.get_collection(collection_name)
+
+    if not collection:
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    from ksdb.server import explain_search
+
+    return await explain_search(name=collection_name, q=query)
 
 @app.get("/collections/{name}/graph")
 async def get_graph(

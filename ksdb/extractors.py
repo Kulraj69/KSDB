@@ -1,5 +1,6 @@
 from typing import List, Dict, Any
 import warnings
+import os
 
 # Suppress warnings from transformers/torch
 warnings.filterwarnings("ignore")
@@ -64,10 +65,14 @@ class GraphExtractor:
         if not self.enabled:
             return []
 
+        model = self.model
+        if model is None:
+            return []
+
         # 1. Extract Entities
         # We look for common entity types relevant to knowledge graphs
         labels = ["Person", "Organization", "Location", "Product", "Event", "Concept", "Technology"]
-        entities = self.model.predict_entities(text, labels, threshold=0.3)
+        entities = model.predict_entities(text, labels, threshold=0.3)
         
         # Deduplicate entities by text
         unique_entities = {}

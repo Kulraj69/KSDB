@@ -29,7 +29,7 @@ services:
       - DATABASE_URL=postgresql://ksdb:${DB_PASSWORD}@postgres:5432/ksdb
       - ADMIN_KEY=${ADMIN_KEY}
       - EMBEDDING_MODEL=all-MiniLM-L6-v2
-      - INDEX_PATH=/data/indices
+      - KSDB_DATA_PATH=/data
     volumes:
       - ksdb_data:/data
     depends_on:

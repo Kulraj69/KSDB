@@ -13,10 +13,11 @@ RUN apt-get update && apt-get install -y \
 
 # Copy requirements
 COPY pyproject.toml ./
+COPY README.md ./
 COPY ksdb/ ./ksdb/
 
 # Install Python dependencies
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[server,s3]"
 
 # Expose port
 EXPOSE 8000

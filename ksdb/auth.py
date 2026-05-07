@@ -28,10 +28,17 @@ class APIKey(Base):
 
 class AuthManager:
     def __init__(self, db_url: str = None):
-        self.db_url = db_url or os.getenv("DATABASE_URL", "sqlite:///auth.db")
-        self.engine = create_engine(self.db_url)
+        self.db_url = db_url or os.getenv("DATABASE_URL") or self._default_sqlite_url()
+        connect_args = {"check_same_thread": False} if self.db_url.startswith("sqlite") else {}
+        self.engine = create_engine(self.db_url, connect_args=connect_args)
         self.SessionLocal = sessionmaker(bind=self.engine)
         Base.metadata.create_all(bind=self.engine)
+
+    @staticmethod
+    def _default_sqlite_url() -> str:
+        data_path = os.path.abspath(os.getenv("KSDB_DATA_PATH", ".ksdb"))
+        os.makedirs(data_path, exist_ok=True)
+        return f"sqlite:///{os.path.join(data_path, 'auth.db')}"
     
     def generate_api_key(self, tenant_id: str, name: str = None) -> str:
         """Generate a new API key for a tenant"""

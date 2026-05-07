@@ -54,7 +54,7 @@ jobs:
           
           if [ -z "$SERVICE_ARN" ]; then
             echo "Creating new App Runner service..."
-            aws apprunner create-service \
+            SERVICE_ARN=$(aws apprunner create-service \
               --service-name ksdb-cloud-service \
               --region ap-south-1 \
               --source-configuration "{
@@ -85,10 +85,13 @@ jobs:
                 \"Timeout\": 5,
                 \"HealthyThreshold\": 1,
                 \"UnhealthyThreshold\": 5
-              }"
+              }" \
+              --query "Service.ServiceArn" \
+              --output text)
+            echo "Created service ARN: $SERVICE_ARN"
           else
             echo "Updating existing App Runner service..."
-            aws apprunner update-service \
+            SERVICE_ARN=$(aws apprunner update-service \
               --service-arn $SERVICE_ARN \
               --region ap-south-1 \
               --source-configuration "{
@@ -99,7 +102,10 @@ jobs:
                   \"ImageIdentifier\": \"$ECR_REGISTRY/$ECR_REPOSITORY:latest\",
                   \"ImageRepositoryType\": \"ECR\"
                 }
-              }"
+              }" \
+              --query "Service.ServiceArn" \
+              --output text)
+            echo "Updated service ARN: $SERVICE_ARN"
           fi
           
           # Wait for service to be stable (Manual polling since 'wait' command doesn't exist)

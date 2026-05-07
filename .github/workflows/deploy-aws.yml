@@ -49,31 +49,53 @@ jobs:
           ADMIN_KEY: ${{ secrets.ADMIN_KEY }}
           ROLE_ARN: "arn:aws:iam::701544683046:role/service-role/AppRunnerECRAccessRole"
         run: |
+          IMAGE_CONFIG="{
+            \"Port\": \"8000\",
+            \"RuntimeEnvironmentVariables\": {
+              \"DATABASE_URL\": \"$DATABASE_URL\",
+              \"ADMIN_KEY\": \"$ADMIN_KEY\"
+            }
+          }"
+
+          SOURCE_CONFIG="{
+            \"AuthenticationConfiguration\": {
+              \"AccessRoleArn\": \"$ROLE_ARN\"
+            },
+            \"ImageRepository\": {
+              \"ImageIdentifier\": \"$ECR_REGISTRY/$ECR_REPOSITORY:latest\",
+              \"ImageRepositoryType\": \"ECR\",
+              \"ImageConfiguration\": $IMAGE_CONFIG
+            },
+            \"AutoDeploymentsEnabled\": true
+          }"
+
           # Check if service exists
           SERVICE_ARN=$(aws apprunner list-services --region ap-south-1 --query "ServiceSummaryList[?ServiceName=='ksdb-cloud-service'].ServiceArn" --output text)
+
+          if [ -n "$SERVICE_ARN" ]; then
+            CURRENT_STATUS=$(aws apprunner describe-service --service-arn "$SERVICE_ARN" --region ap-south-1 --query "Service.Status" --output text)
+            echo "Existing service status: $CURRENT_STATUS"
+
+            if [ "$CURRENT_STATUS" == "CREATE_FAILED" ] || [ "$CURRENT_STATUS" == "UPDATE_FAILED" ]; then
+              echo "Service is stuck in $CURRENT_STATUS. Deleting it before recreate..."
+              aws apprunner delete-service --service-arn "$SERVICE_ARN" --region ap-south-1
+              for i in {1..60}; do
+                SERVICE_ARN=$(aws apprunner list-services --region ap-south-1 --query "ServiceSummaryList[?ServiceName=='ksdb-cloud-service'].ServiceArn" --output text)
+                if [ -z "$SERVICE_ARN" ]; then
+                  echo "Deleted failed service."
+                  break
+                fi
+                sleep 10
+              done
+            fi
+          fi
           
           if [ -z "$SERVICE_ARN" ]; then
             echo "Creating new App Runner service..."
             SERVICE_ARN=$(aws apprunner create-service \
               --service-name ksdb-cloud-service \
               --region ap-south-1 \
-              --source-configuration "{
-                \"AuthenticationConfiguration\": {
-                  \"AccessRoleArn\": \"$ROLE_ARN\"
-                },
-                \"ImageRepository\": {
-                  \"ImageIdentifier\": \"$ECR_REGISTRY/$ECR_REPOSITORY:latest\",
-                  \"ImageRepositoryType\": \"ECR\",
-                  \"ImageConfiguration\": {
-                    \"Port\": \"8000\",
-                    \"RuntimeEnvironmentVariables\": {
-                      \"DATABASE_URL\": \"$DATABASE_URL\",
-                      \"ADMIN_KEY\": \"$ADMIN_KEY\"
-                    }
-                  }
-                },
-                \"AutoDeploymentsEnabled\": true
-              }" \
+              --source-configuration "$SOURCE_CONFIG" \
               --instance-configuration "{
                 \"Cpu\": \"1 vCPU\",
                 \"Memory\": \"2 GB\"
@@ -94,15 +116,7 @@ jobs:
             SERVICE_ARN=$(aws apprunner update-service \
               --service-arn $SERVICE_ARN \
               --region ap-south-1 \
-              --source-configuration "{
-                \"AuthenticationConfiguration\": {
-                  \"AccessRoleArn\": \"$ROLE_ARN\"
-                },
-                \"ImageRepository\": {
-                  \"ImageIdentifier\": \"$ECR_REGISTRY/$ECR_REPOSITORY:latest\",
-                  \"ImageRepositoryType\": \"ECR\"
-                }
-              }" \
+              --source-configuration "$SOURCE_CONFIG" \
               --query "Service.ServiceArn" \
               --output text)
             echo "Updated service ARN: $SERVICE_ARN"
